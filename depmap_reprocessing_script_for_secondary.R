@@ -4,7 +4,7 @@ library(dr4pl)
 library(drc)
 
 
-# Set the path for the files downloaded from depmap.org/repurposing
+# Set the path for the files downloaded from https://figshare.com/articles/dataset/PRISM_Repurposing_20Q2_Dataset/20564034/1
 path <- "~/Downloads/secondary portal update/"
 
 # Load the data 
@@ -13,6 +13,8 @@ inst_info <- data.table::fread(paste0(path, "secondary-screen-replicate-treatmen
 log2_fold_change <- data.table::fread(paste0(path, "secondary-screen-logfold-change.csv")) %>% 
   column_to_rownames("V1") %>% 
   as.matrix()
+
+
 
   
 # Formatting viability matrix and condition annotations
@@ -23,50 +25,59 @@ ViabilityConditions <- inst_info %>%
                 SampleID = broad_id,
                 Dose = dose,
                 CompoundPlate = compound_plate) %>%
-  dplyr::mutate(DoseUnit = "uM") %>% 
-  dplyr::distinct(Label, SampleID, Dose, DoseUnit, CompoundPlate, detection_plate) %>% 
-  dplyr::group_by(SampleID, Dose, CompoundPlate) %>%  
+  dplyr::mutate(DoseUnit = "uM",
+                cellset = word(CompoundPlate, 2, sep = fixed("_")),
+                CompoundPlate = word(CompoundPlate, 1, sep = fixed("_")),
+                cellset = ifelse(is.na(cellset), "PR500", cellset)) %>% 
+  dplyr::distinct(Label, SampleID, Dose, DoseUnit, CompoundPlate, cellset, detection_plate) %>% 
+  dplyr::group_by(SampleID, Dose, CompoundPlate ,cellset) %>%  
   dplyr::arrange(detection_plate) %>% 
   dplyr::mutate(Replicate = 1:n()) %>% 
-  dplyr::select(-detection_plate) %>% 
+  dplyr::select(-detection_plate, -cellset) %>% 
+  dplyr::group_by(SampleID) %>% 
+  dplyr::top_n(-1, CompoundPlate) %>% 
   dplyr::ungroup()
   
-ViabilityMatrix <- 2^log2_fold_change[is.na(word(rownames(log2_fold_change), 2, sep = fixed("_"))), unique(ViabilityConditions$Label)]
+
+
+
+ViabilityMatrix <- 2^log2_fold_change[, unique(ViabilityConditions$Label)]
+
+ViabilityRows <- tibble(Var1 = rownames(ViabilityMatrix)) %>% 
+  dplyr::filter(is.na(word(Var1, 3, sep = fixed("_")))) %>% 
+  dplyr::mutate(depmap_id = word(Var1, 2, sep = fixed("_")),
+                cellset = word(Var1, 1, sep = fixed("_"))) %>% 
+  dplyr::group_by(depmap_id) %>% 
+  dplyr::top_n(1,cellset) %>% 
+  dplyr::ungroup() 
 
 collapsed_lfc <- ViabilityMatrix %>% 
   reshape2::melt() %>%
   dplyr::filter(is.finite(value)) %>% 
+  dplyr::left_join(ViabilityRows) %>% 
   dplyr::rename(Label = Var2, FC = value) %>% 
   dplyr::left_join(ViabilityConditions) %>% 
   dplyr::mutate(LFC = log2(FC)) %>% 
-  dplyr::group_by(SampleID, Dose, DoseUnit, CompoundPlate, Var1) %>% 
-  dplyr::filter(n() > 1) %>%
+  dplyr::group_by(SampleID, Dose, DoseUnit, CompoundPlate, depmap_id) %>% 
+  dplyr::filter(n() > 1) %>% 
   dplyr::summarise(LFC = median(LFC)) %>% 
   dplyr::ungroup()
 
-selected_profiles <- collapsed_lfc %>% 
-  dplyr::count(SampleID, CompoundPlate) %>% 
-  dplyr::group_by(SampleID) %>% 
-  dplyr::top_n(1, n) %>%
-  dplyr::ungroup()
-
-collapsed_lfc <- selected_profiles %>% 
-  dplyr::left_join(collapsed_lfc) %>% 
-  dplyr::left_join(inst_info %>% 
+collapsed_lfc <- collapsed_lfc %>% 
+  dplyr::inner_join(inst_info %>% 
                      dplyr::distinct(broad_id, name) %>%
                      dplyr::rename(SampleID = broad_id)) %>% 
   dplyr::mutate(Label = paste0(toupper(name), "(", SampleID, ") @",Dose, " ", DoseUnit)) %>% 
-  dplyr::distinct(Label, SampleID, Dose, DoseUnit, Var1, LFC)
+  dplyr::distinct(Label, SampleID, Dose, DoseUnit, depmap_id, LFC)
 
 ViabilityCollapsedConditions <- collapsed_lfc %>% 
   dplyr::distinct(Label, SampleID, Dose, DoseUnit)
 
-ViabilityCollapsedMatrix <- 2^reshape2::acast(collapsed_lfc, Var1 ~ Label, value.var = "LFC")
+ViabilityCollapsedMatrix <- 2^reshape2::acast(collapsed_lfc, depmap_id ~ Label, value.var = "LFC")
 
-ViabilityConditions <- ViabilityConditions %>% 
-  dplyr::semi_join(selected_profiles) 
+ViabilityMatrix <- ViabilityMatrix[ViabilityRows$Var1, unique(ViabilityConditions$Label)]
+rownames(ViabilityMatrix) <- ViabilityRows$depmap_id
 
-ViabilityMatrix <- ViabilityMatrix[, unique(ViabilityConditions$Label)]
 
 # Fitting Dose Response Curves-----
 
@@ -293,18 +304,16 @@ f <- function(df) {
 }
 
 
-
-
 # Create a cluster
 cl <- makeCluster(detectCores() - 1)
 # Fit the curves
-DRC <- parLapply(cl, LFC.parallel, f)
+DRC <- parLapply(cl, LFC.parallel[(k*100-99):pmin((k*100), length(LFC.parallel))], f)
 # Stop the cluster
 stopCluster(cl)
 
+
 DRC <- dplyr::bind_rows(DRC)
 rm(LFC.parallel, f)
-
 
 DRC <- ViabilityCollapsedConditions %>%
   dplyr::group_by(SampleID) %>% 
