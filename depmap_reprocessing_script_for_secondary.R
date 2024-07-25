@@ -350,10 +350,11 @@ ViabilityMatrix %>%
   write.csv(paste0(path, "secondary-screen-viability-matrix.csv"))
 
 ViabilityCollapsedMatrix %>% 
-  write.csv(paste0(path, "secondary-screen-viability-collapsed-matrix.csv"))
+  log2() %>%
+  write.csv(paste0(path, "secondary-screen-log2-viability-collapsed-matrix.csv"))
 
 ViabilityConditions %>% 
   write_csv(paste0(path, "secondary-screen-viability-conditions.csv"))
 
 ViabilityCollapsedConditions %>% 
-  write_csv(paste0(path, "secondary-screen-viability-collapsed-conditions.csv"))
+  write_csv(paste0(path, "secondary-screen-log2-viability-collapsed-conditions.csv"))
